@@ -1,0 +1,188 @@
+#!/bin/bash
+
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+  echo "Not inside a Git repository."
+  exit 1
+fi
+
+force_checkout=""
+branch_query=""
+prune_worktree=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -f|--force)
+      force_checkout="--force"
+      prune_worktree="true"
+      shift
+      ;;
+    *)
+      if [ -z "$branch_query" ]; then
+        branch_query="$1"
+        shift
+      else
+        echo "Unexpected argument: $1"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$branch_query" ]; then
+  echo "Usage: cob <branch-name-fragment> [-f|--force]"
+  exit 1
+fi
+
+# Prints the admin directory ($GIT_COMMON_DIR/worktrees/<id>) registered for a
+# worktree path, empty if none matches. The <id> is not reliably the basename of
+# the path - git appends a suffix when two worktrees share a basename - so match
+# on the gitdir file contents instead of guessing the name.
+worktree_admin_dir() {
+  local target="$1"
+  local common_dir gitdir_file
+
+  common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || common_dir=$(git rev-parse --git-common-dir 2>/dev/null) \
+    || return 0
+
+  for gitdir_file in "$common_dir"/worktrees/*/gitdir; do
+    [ -f "$gitdir_file" ] || continue
+    if [ "$(cat "$gitdir_file")" = "$target/.git" ]; then
+      dirname "$gitdir_file"
+      return 0
+    fi
+  done
+}
+
+# Spin while $1 (a pid) runs, then hand back its exit status so callers can
+# still branch on whether it worked.
+#
+# A monorepo worktree is nearly all node_modules - a couple of hundred thousand
+# files, each its own unlink - so a removal runs long enough with no output to
+# look like a hang. There has to be something moving on screen.
+spin_while() {
+  local pid="$1" msg="$2"
+  local frames='|/-\' i=0 start=$SECONDS
+
+  # Only animate on a terminal; a log file should not collect spinner frames.
+  if [ ! -t 2 ]; then wait "$pid"; return $?; fi
+
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$(( (i + 1) % 4 ))
+    printf '\r\033[K%s %s (%ss)' "${frames:$i:1}" "$msg" "$(( SECONDS - start ))" >&2
+    sleep 0.2
+  done
+  printf '\r\033[K' >&2
+  wait "$pid"
+}
+
+branch_names=()
+matches=()
+
+while IFS= read -r line; do
+  branch=$(cut -d'|' -f1 <<< "$line")
+  display=$(cut -d'|' -f2 <<< "$line")
+  branch_names+=("$branch")
+  matches+=("$display")
+done < <(
+  git for-each-ref --sort=committerdate \
+    --format='%(refname:short)|%(refname:short) - %(committerdate:relative) - %(objectname:short) - %(contents:subject)' \
+    refs/heads/ | grep -i ".*$branch_query.* -" | grep -Ev '^(bu-|backup)'
+)
+
+count=${#matches[@]}
+branch_name=""
+
+if [ "$count" -eq 0 ]; then
+  echo "No matching branches found for '$branch_query'"
+  exit 1
+elif [ "$count" -eq 1 ]; then
+  branch_name="${branch_names[0]}"
+else
+  echo "Multiple branches found:"
+  for i in "${!matches[@]}"; do
+    echo "[$i] ${matches[i]}"
+  done
+  echo -n "Choose a branch number to checkout: "
+  read -r selection
+  if [[ "$selection" =~ ^[0-9]+$ && "$selection" -ge 0 && "$selection" -lt $count ]]; then
+    branch_name="${branch_names[$selection]}"
+  else
+    echo "Invalid selection"
+    exit 1
+  fi
+fi
+
+echo "git checkout $force_checkout $branch_name"
+
+# Capture combined output so we can inspect failures
+checkout_output=$(git checkout $force_checkout "$branch_name" 2>&1)
+checkout_status=$?
+echo "$checkout_output"
+
+# If checkout failed because the branch is tied to an existing worktree,
+# and -f/--force was requested, offer to remove that worktree and retry.
+if [ "$checkout_status" -ne 0 ] && [ -n "$prune_worktree" ] \
+   && echo "$checkout_output" | grep -q "is already used by worktree at"; then
+
+  worktree_path=$(echo "$checkout_output" | sed -n "s/.*is already used by worktree at '\(.*\)'.*/\1/p")
+
+  if [ -z "$worktree_path" ]; then
+    echo "Could not determine the worktree path from the error output."
+    exit "$checkout_status"
+  fi
+
+  if [ "$worktree_path" = "/" ] || [ "$worktree_path" = "$(git rev-parse --show-toplevel)" ]; then
+    echo "Refusing to remove $worktree_path."
+    exit "$checkout_status"
+  fi
+
+  # Look the registration up before removing anything: once the admin entry is
+  # gone there is nothing left to match against.
+  admin_dir=$(worktree_admin_dir "$worktree_path")
+
+  if [ -n "$admin_dir" ] && [ -f "$admin_dir/locked" ]; then
+    echo "That worktree is locked: $(cat "$admin_dir/locked")"
+    echo "Claude Code locks its session worktrees; removing one breaks that session."
+  fi
+
+  echo -n "Do you want to remove the worktree at $worktree_path? [y/N] "
+  read -r answer
+  case "$answer" in
+    y|Y|yes|Yes|YES)
+      # Two --force flags on purpose: the first accepts a dirty worktree, the
+      # second overrides a lock. A single one fails on a locked worktree.
+      #
+      # Backgrounded so the spinner can report that the delete is still going;
+      # spin_while passes the exit status through, so the fallback below still
+      # triggers on exactly the same condition it always did.
+      git worktree remove --force --force "$worktree_path" 2>/dev/null &
+      if ! spin_while $! "Removing worktree"; then
+        # Fallback for a worktree git can no longer match - usually the directory
+        # was already deleted by hand. `git worktree prune` skips locked entries,
+        # so the lock file has to go first or the registration survives and the
+        # branch stays "already used by worktree at ...".
+        # stderr suppressed to match the removal above, and because rm writes
+        # asynchronously: unredirected, its errors interleave with the spinner
+        # and shred both. A genuinely undeletable tree still surfaces, as the
+        # retried checkout below fails on the same collision.
+        rm -rf "$worktree_path" 2>/dev/null &
+        spin_while $! "Deleting files"
+        if [ -n "$admin_dir" ]; then
+          rm -f "$admin_dir/locked"
+        fi
+        git worktree prune
+      fi
+      echo "git checkout $force_checkout $branch_name"
+      git checkout $force_checkout "$branch_name"
+      exit $?
+      ;;
+    *)
+      echo "Aborted."
+      exit "$checkout_status"
+      ;;
+  esac
+fi
+
+exit "$checkout_status"

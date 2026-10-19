@@ -1,0 +1,18 @@
+# Git aliases, managed by fresh.
+#
+# Pulled into ~/.gitconfig via:
+#   [include]
+#       path = ~/.gitconfig.fresh
+#
+# and built there by this line in ~/.freshrc:
+#   fresh ColinElective/FreshShell git/aliases.gitconfig --file ~/.gitconfig.fresh
+[alias]
+	puff = pull --ff-only
+	ff = merge --ff-only
+	lb = for-each-ref --sort=committerdate refs/heads/ --format=\"%(HEAD) %(color:yellow)%(refname:short)%(color:reset) - %(color:green)%(committerdate:relative)%(color:reset) - %(color:red)%(objectname:short)%(color:reset) %(contents:subject) - %(authorname)\"
+	co = checkout
+	cp = cherry-pick
+	lg = log --pretty=format:\"%C(auto)%h %s %Cgreen%cr %Cblue%an\"
+	lbd = !git for-each-ref --sort=-committerdate refs/heads/ --format=\"echo \\\"Deleting %(committerdate:relative) %(refname:short)\\\" && git branch -D %(refname:short)\"
+	filecommits = log --pretty=format:\"%h %ad %an %s\" --date=short --
+	info = "!f() { echo -e \"\\033[1;36mCommit:\\033[0m %H\\n\\033[1;33mAuthor:\\033[0m %an <%ae>\\n\\033[1;32mDate:\\033[0m %ad\\n\\033[1;35mMessage:\\033[0m %s\\n\\n\\033[1;34mAffected files:\\033[0m\" | git show --no-patch --format=\"$(cat)\" \"$1\" && git diff-tree --no-commit-id --name-only -r \"$1\" | sed \"s/^/ /\"; }; f"
