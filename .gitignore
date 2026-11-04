@@ -1,4 +1,5 @@
-.claude
+.claude/*
+!.claude/skills/
 
 # Personal try-out zshrc — contains local secrets / personal helpers.
 .zshrc.sample

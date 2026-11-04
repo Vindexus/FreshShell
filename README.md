@@ -12,6 +12,7 @@ shell/               files sourced into the shell
   functions/         shell function definitions
 git/                 git config, included from ~/.gitconfig
 bin/                 standalone executables (linked via --bin)
+agents/              shared agent rules, copied into projects
 ```
 
 ## Usage
@@ -31,3 +32,15 @@ bin/                 standalone executables (linked via --bin)
    fresh update
    source ~/.fresh/build/shell.sh   # already sourced by ~/.bashrc on login
    ```
+
+## Agent rules
+
+`agents/rules/` holds code standards shared across projects. Copy them into a
+project from its root folder, then commit them there:
+
+```sh
+copy-agent-rules
+```
+
+To bring improvements back, run `/pull-changes <project-path>` in Claude Code
+from this repo. It commits to the current branch.
