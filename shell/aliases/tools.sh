@@ -2,7 +2,3 @@
 
 # Launch Claude in a fresh git worktree.
 alias cw="claude --worktree"
-
-alias cr="echo 'claude says hi'"
-
-alias foo="echo 'bar'"

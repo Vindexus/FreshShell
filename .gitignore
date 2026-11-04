@@ -2,6 +2,3 @@
 
 # Personal try-out zshrc — contains local secrets / personal helpers.
 .zshrc.sample
-
-# macOS
-.DS_Store

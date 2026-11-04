@@ -11,23 +11,21 @@
 fresh freshshell/fresh bin/fresh --bin
 
 # --- Environment & runtime ---
-fresh ColinElective/FreshShell shell/env.sh
-fresh ColinElective/FreshShell shell/nvm.sh
+fresh Vindexus/FreshShell shell/env.sh
 
 # --- Aliases ---
-fresh ColinElective/FreshShell shell/aliases/\*
+fresh Vindexus/FreshShell shell/aliases/\*
 
 # --- Functions ---
-fresh ColinElective/FreshShell shell/functions/\*
+fresh Vindexus/FreshShell shell/functions/\*
 
 # --- Login banner (sourced last) ---
-fresh ColinElective/FreshShell shell/startup.sh
+fresh Vindexus/FreshShell shell/startup.sh
 
 # --- Git config (aliases via [include] in ~/.gitconfig) ---
-fresh ColinElective/FreshShell git/aliases.gitconfig --file ~/.gitconfig.fresh
+fresh Vindexus/FreshShell git/aliases.gitconfig --file ~/.gitconfig.fresh
 
 # --- Executables (bin/) ---
-fresh ColinElective/FreshShell bin/cob --bin
-fresh ColinElective/FreshShell bin/mrpost --bin
+fresh Vindexus/FreshShell bin/cob --bin
 
 fresh foobacca/dotfiles shell/aliases-dir

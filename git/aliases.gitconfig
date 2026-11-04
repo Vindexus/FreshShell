@@ -5,7 +5,7 @@
 #       path = ~/.gitconfig.fresh
 #
 # and built there by this line in ~/.freshrc:
-#   fresh ColinElective/FreshShell git/aliases.gitconfig --file ~/.gitconfig.fresh
+#   fresh Vindexus/FreshShell git/aliases.gitconfig --file ~/.gitconfig.fresh
 [alias]
 	puff = pull --ff-only
 	ff = merge --ff-only

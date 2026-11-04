@@ -28,7 +28,7 @@ function git-squash() {
   [[ "$confirm" != "y" && "$confirm" != "Y" ]] && echo "Aborted." && return 1
 
   git checkout "$feature" || return 1
-  git branch -M "$feature" "$backup" || return 1
+  git branch -m "$feature" "$backup" || return 1
   git fetch origin "$target" || return 1
   git checkout -b "$feature" "origin/$target" || return 1
   git restore --source="$backup" --worktree --no-overlay -- . || return 1
@@ -48,20 +48,4 @@ breset () {
   git checkout origin/$1
   git branch -D $1
   git checkout -b $1
-}
-
-# Start a new DB-script ticket branch off staging and scaffold the script.
-#   Usage: vscript <ticket-id>
-vscript() {
-  if [ -z "$1" ]; then
-    echo "Usage: vscript <ticket-id>"
-    return 1
-  fi
-
-  set -x
-  git checkout staging || return 1
-  git pull origin staging --ff-only || return 1
-  git checkout -b "$1" || return 1
-  npx nx run apps/core-api:db:create-script "$1" || return 1
-  set +x
 }
