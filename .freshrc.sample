@@ -30,5 +30,6 @@ fresh Vindexus/FreshShell agents/AGENTS.md --file ~/.claude/CLAUDE.md
 
 # --- Executables (bin/) ---
 fresh Vindexus/FreshShell bin/cob --bin
+fresh Vindexus/FreshShell bin/block-agent-push --bin
 
 fresh foobacca/dotfiles shell/aliases-dir

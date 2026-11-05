@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+#
+# block-agent-push - Claude Code PreToolUse hook that stops agents pushing to
+# main or master. People pushing from a terminal aren't affected.
+#
+# This guards against mistakes, not a determined agent: it reads the command
+# text, so a push hidden inside a script or alias gets through.
+
+import json
+import os
+import shlex
+import subprocess
+import sys
+
+PROTECTED_BRANCHES = {"main", "master"}
+SEPARATOR_CHARS = ";|&\n"
+GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+PUSH_EVERYTHING_FLAGS = {"--all", "--branches", "--mirror"}
+
+
+def split_commands(command):
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=SEPARATOR_CHARS)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+
+    commands = [[]]
+    for token in tokens:
+        if set(token) <= set(SEPARATOR_CHARS):
+            commands.append([])
+        else:
+            commands[-1].append(token)
+
+    return commands
+
+
+def current_branch(directory):
+    result = subprocess.run(
+        ["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def parse_git_push(tokens, directory):
+    """Returns the push arguments and its directory, or None if it isn't a push."""
+    while tokens and "=" in tokens[0] and not tokens[0].startswith("-"):
+        tokens = tokens[1:]
+
+    if not tokens or tokens[0] != "git":
+        return None
+
+    index = 1
+    while index < len(tokens) and tokens[index].startswith("-"):
+        if tokens[index] == "-C" and index + 1 < len(tokens):
+            directory = os.path.join(directory, tokens[index + 1])
+        index += 2 if tokens[index] in GIT_OPTIONS_WITH_VALUE else 1
+
+    if index >= len(tokens) or tokens[index] != "push":
+        return None
+
+    return tokens[index + 1 :], directory
+
+
+def destination_branch(refspec, directory):
+    destination = refspec.split(":")[-1].lstrip("+").removeprefix("refs/heads/")
+
+    if destination == "HEAD":
+        return current_branch(directory)
+
+    return destination
+
+
+def pushed_branches(args, directory):
+    if PUSH_EVERYTHING_FLAGS & set(args):
+        return PROTECTED_BRANCHES
+
+    is_redirect = lambda arg: ">" in arg or "<" in arg
+    positional = [arg for arg in args if not arg.startswith("-") and not is_redirect(arg)]
+    refspecs = positional[1:]
+
+    if not refspecs:
+        return {current_branch(directory)}
+
+    return {destination_branch(refspec, directory) for refspec in refspecs}
+
+
+def main():
+    payload = json.load(sys.stdin)
+    directory = payload.get("cwd") or os.getcwd()
+
+    for tokens in split_commands(payload.get("tool_input", {}).get("command", "")):
+        if len(tokens) > 1 and tokens[0] == "cd":
+            directory = os.path.join(directory, os.path.expanduser(tokens[1]))
+            continue
+
+        push = parse_git_push(tokens, directory)
+        if push is None:
+            continue
+
+        blocked = pushed_branches(*push) & PROTECTED_BRANCHES
+        if blocked:
+            branch = sorted(blocked)[0]
+            print(
+                f"Blocked: agents can't push to {branch}. Push a feature branch, "
+                "and the user will merge it.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

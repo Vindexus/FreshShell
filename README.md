@@ -38,8 +38,9 @@ agents/              agent instructions and shared rules
 `agents/AGENTS.md` is how I work with agents. fresh installs it as
 `~/.claude/CLAUDE.md`, so it applies everywhere.
 
-`agents/rules/` holds code standards shared across projects. Copy them into a
-project from its root folder, then commit them there:
+`agents/rules/` and `agents/skills/` hold code standards and workflows shared
+across projects, like `/rpi`. Copy them into a project from its root folder,
+then commit them there:
 
 ```sh
 copy-agent-rules
@@ -47,3 +48,22 @@ copy-agent-rules
 
 To bring improvements back, run `/pull-changes <project-path>` in Claude Code
 from this repo. It commits to the current branch.
+
+### Blocking agent pushes to main
+
+`bin/block-agent-push` stops Claude Code pushing to `main` or `master`. Pushing
+from a terminal isn't affected. Add this to `~/.claude/settings.json` on each
+machine:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "~/bin/block-agent-push" }]
+      }
+    ]
+  }
+}
+```
