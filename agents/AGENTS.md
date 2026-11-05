@@ -20,6 +20,8 @@ if it's related to the active work and small.
 - Start work on a new branch in a worktree.
 - Commit and push to that branch by default.
 - Never push to `main`.
+- After pushing, give me the link to the open pull request, or the link to
+  create one if there isn't one yet.
 
 ## Verification
 
