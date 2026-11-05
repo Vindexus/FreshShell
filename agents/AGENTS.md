@@ -37,3 +37,5 @@ Don't add a new dependency without asking.
 Say what you're doing and why. Show code samples, function contracts,
 types and interfaces, and folder structures as you work, so I can catch code
 smells early.
+
+Use absolute paths when naming files, so I can click through to worktree files.
