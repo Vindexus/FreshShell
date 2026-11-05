@@ -12,6 +12,7 @@ shell/               files sourced into the shell
   functions/         shell function definitions
 git/                 git config, included from ~/.gitconfig
 bin/                 standalone executables (linked via --bin)
+tests/               tests for the scripts in bin/
 agents/              agent instructions and shared rules
 ```
 
@@ -67,3 +68,5 @@ machine:
   }
 }
 ```
+
+Run its tests with `python3 tests/block-agent-push-test.py`.
