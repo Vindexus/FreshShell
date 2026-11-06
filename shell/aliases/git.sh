@@ -13,11 +13,6 @@ _gfo_complete() {
   COMPREPLY=($(compgen -W "$(git for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin/ 2>/dev/null)" -- "${COMP_WORDS[COMP_CWORD]}"))
 }
 complete -F _gfo_complete gfo
-alias gpo="git push origin"
-_gpo_complete() {
-  COMPREPLY=($(compgen -W "$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)" -- "${COMP_WORDS[COMP_CWORD]}"))
-}
-complete -F _gpo_complete gpo
 alias gpf="git puff"
 alias glb="git lb"
 alias glbd="git lbd"
