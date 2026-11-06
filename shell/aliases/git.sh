@@ -11,7 +11,7 @@ alias gs="git status"
 alias gfo="git fetch origin"
 alias gpo="git push origin"
 _gpo_complete() {
-  COMPREPLY=($(compgen -W "$(git for-each-ref --format='%(refname:short)' refs/heads/)" -- "${COMP_WORDS[COMP_CWORD]}"))
+  COMPREPLY=($(compgen -W "$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)" -- "${COMP_WORDS[COMP_CWORD]}"))
 }
 complete -F _gpo_complete gpo
 alias gpf="git puff"
