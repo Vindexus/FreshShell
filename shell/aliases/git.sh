@@ -14,6 +14,7 @@ _gfo_complete() {
 }
 complete -F _gfo_complete gfo
 alias gpf="git puff"
+alias gff="git ff"
 alias glb="git lb"
 alias glbd="git lbd"
 alias glg="git lg"
@@ -28,5 +29,6 @@ if declare -F __git_complete >/dev/null; then
   __git_complete gap _git_add
   __git_complete gco _git_checkout
   __git_complete gd _git_diff
+  __git_complete gff _git_merge
   __git_complete glg _git_log
 fi
