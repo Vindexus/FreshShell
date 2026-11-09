@@ -12,7 +12,8 @@ shell/               files sourced into the shell
   functions/         shell function definitions
 git/                 git config, included from ~/.gitconfig
 bin/                 standalone executables (linked via --bin)
-tests/               tests for the scripts in bin/
+lib/                 helpers shared by bin/ scripts and shell functions
+tests/               tests for bin/ and lib/
 agents/              agent instructions and shared rules
 ```
 
@@ -70,3 +71,33 @@ machine:
 ```
 
 Run its tests with `python3 tests/block-agent-push-test.py`.
+
+### Cleaning up stale worktrees
+
+`gwclean [AGE]` removes worktrees, and deletes their branches, once they've
+been idle longer than `AGE` (default `3d`; also `30m`, `1h`, `1w`), have no
+uncommitted changes, and are fully pushed. If the remote branch is gone, it
+checks with `gh` that the PR was merged at the same commit. `-n` shows what it
+would do; `-q` prints removals only.
+
+It runs on its own when a terminal opens in a repo (`shell/startup.sh`). To run
+it when a Claude Code session starts, add this to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [{ "type": "command", "command": "~/bin/gwclean -q" }]
+      }
+    ]
+  }
+}
+```
+
+`bin/` scripts find shared code in `lib/` next to them, or in fresh's clone at
+`~/.fresh/source/Vindexus/FreshShell/lib/` once installed.
+
+Run the tests with `python3 tests/gwclean-test.py` and
+`python3 tests/duration-test.py`.

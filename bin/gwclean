@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+#
+# gwclean - remove stale git worktrees and their branches.
+#
+# A worktree is removed, and its branch deleted, when all of these are true:
+#   - nothing has happened in it for longer than AGE (default 3d): no commits,
+#     no index writes, and it wasn't created recently
+#   - it has no uncommitted or untracked changes
+#   - every commit is pushed, or its upstream is gone because the PR was
+#     merged (checked with gh, at the same commit as local HEAD)
+#
+# Never touches the main worktree, the worktree you're in, locked worktrees,
+# or detached HEADs. Finishes with `git worktree prune`.
+#
+# Usage: gwclean [-n|--dry-run] [-q|--quiet] [AGE]
+#   AGE      30m, 1h, 2d, 1w (default 3d)
+#   -n       show what would be removed without changing anything
+#   -q       print removals only; outside a git repo, exit silently (for hooks)
+
+set -uo pipefail
+
+usage() {
+  sed -n 's/^# \{0,1\}//; /^Usage:/,/^$/p' "$0" | sed '/^$/d' >&2
+}
+
+load_lib() {
+  local script_dir
+  script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+  local candidate
+  for candidate in \
+    "$script_dir/../lib/duration.sh" \
+    "$HOME/.fresh/source/Vindexus/FreshShell/lib/duration.sh"; do
+    if [[ -f "$candidate" ]]; then
+      # shellcheck source=../lib/duration.sh
+      source "$candidate"
+      return 0
+    fi
+  done
+  echo "gwclean: can't find lib/duration.sh" >&2
+  exit 1
+}
+
+mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
+# Newest of: last commit, worktree creation, last index write.
+last_activity() {
+  local path="$1" admin_dir="$2"
+  local newest
+  newest=$(git -C "$path" log -1 --format=%ct 2>/dev/null || echo 0)
+  local file stamp
+  for file in "$admin_dir/commondir" "$admin_dir/index"; do
+    [[ -e "$file" ]] || continue
+    stamp=$(mtime "$file")
+    ((stamp > newest)) && newest=$stamp
+  done
+  echo "$newest"
+}
+
+# Prints why the branch isn't safe to delete, or nothing if it is.
+unpushed_reason() {
+  local path="$1" branch="$2" head="$3"
+
+  if git -C "$path" rev-parse --verify --quiet '@{u}' >/dev/null; then
+    local ahead
+    ahead=$(git -C "$path" rev-list --count '@{u}..HEAD')
+    ((ahead > 0)) && echo "$ahead unpushed commit(s)"
+    return
+  fi
+
+  if ! git -C "$path" config "branch.$branch.merge" >/dev/null; then
+    echo "no upstream"
+    return
+  fi
+
+  # Upstream is configured but gone, usually because the PR was merged and
+  # the remote branch deleted. Only trust a merged PR at this exact commit.
+  if ! command -v gh >/dev/null; then
+    echo "upstream gone, gh not installed to check for a merged PR"
+    return
+  fi
+  local merged_heads
+  if ! merged_heads=$(cd "$main_worktree" && gh pr list --head "$branch" --state merged \
+    --json headRefOid --jq '.[].headRefOid' 2>/dev/null); then
+    echo "upstream gone, gh couldn't check for a merged PR"
+    return
+  fi
+  if ! grep -qx "$head" <<<"$merged_heads"; then
+    echo "upstream gone, no merged PR at this commit"
+  fi
+}
+
+report() {
+  local verb="$1" path="$2" branch="$3" reason="${4:-}"
+  if [[ "$quiet" == true && "$verb" != removed && "$verb" != "would remove" ]]; then
+    return
+  fi
+  printf '%-13s %s (%s)%s\n' "$verb" "$path" "$branch" "${reason:+: $reason}"
+}
+
+clean_worktree() {
+  local path="$1" head="$2" branch="$3"
+
+  if [[ "$path" == "$current_worktree" ]]; then
+    report kept "$path" "$branch" "you're in it"
+    return
+  fi
+
+  local admin_dir
+  admin_dir=$(git -C "$path" rev-parse --path-format=absolute --git-dir 2>/dev/null)
+  local idle=$((now - $(last_activity "$path" "$admin_dir")))
+  if ((idle < max_age)); then
+    report kept "$path" "$branch" "active in the last $age"
+    return
+  fi
+
+  if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
+    report kept "$path" "$branch" "uncommitted changes"
+    return
+  fi
+
+  local reason
+  reason=$(unpushed_reason "$path" "$branch" "$head")
+  if [[ -n "$reason" ]]; then
+    report kept "$path" "$branch" "$reason"
+    return
+  fi
+
+  if [[ "$dry_run" == true ]]; then
+    report "would remove" "$path" "$branch"
+    return
+  fi
+
+  local error
+  if ! error=$(git worktree remove "$path" 2>&1); then
+    echo "gwclean: couldn't remove $path: $error" >&2
+    return
+  fi
+  if ! error=$(git branch -D "$branch" 2>&1); then
+    echo "gwclean: removed $path but couldn't delete $branch: $error" >&2
+    return
+  fi
+  report removed "$path" "$branch"
+}
+
+main() {
+  dry_run=false
+  quiet=false
+  age=3d
+
+  while (($#)); do
+    case "$1" in
+      -n | --dry-run) dry_run=true ;;
+      -q | --quiet) quiet=true ;;
+      -h | --help) usage; exit 0 ;;
+      -*) echo "gwclean: unknown option $1" >&2; usage; exit 2 ;;
+      *) age="$1" ;;
+    esac
+    shift
+  done
+
+  load_lib
+  if ! max_age=$(parse_duration "$age"); then
+    echo "gwclean: invalid age '$age', expected something like 30m, 1h, 2d or 1w" >&2
+    exit 2
+  fi
+
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    [[ "$quiet" == true ]] && exit 0
+    echo "gwclean: not a git repository" >&2
+    exit 1
+  fi
+
+  now=$(date +%s)
+  current_worktree=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  main_worktree=""
+
+  # Records in `git worktree list --porcelain` are separated by blank lines.
+  # The first record is always the main worktree.
+  local path="" head="" branch="" skip=""
+  local -a records=()
+  while IFS= read -r line || [[ -n "$path" ]]; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "HEAD "*) head="${line#HEAD }" ;;
+      "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
+      detached) skip="detached HEAD" ;;
+      bare) skip="bare" ;;
+      locked*) skip="locked" ;;
+      prunable*) skip="prunable" ;;
+      "")
+        if [[ -n "$path" ]]; then
+          records+=("$path"$'\t'"$head"$'\t'"$branch"$'\t'"$skip")
+        fi
+        path="" head="" branch="" skip=""
+        ;;
+    esac
+  done < <(git worktree list --porcelain; echo)
+
+  local record
+  for record in "${records[@]}"; do
+    IFS=$'\t' read -r path head branch skip <<<"$record"
+    if [[ -z "$main_worktree" ]]; then
+      main_worktree="$path"
+      continue
+    fi
+    if [[ -n "$skip" ]]; then
+      [[ "$skip" != prunable ]] && report kept "$path" "${branch:-none}" "$skip"
+      continue
+    fi
+    clean_worktree "$path" "$head" "$branch"
+  done
+
+  [[ "$dry_run" == true ]] || git worktree prune
+}
+
+main "$@"
