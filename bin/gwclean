@@ -6,8 +6,12 @@
 #   - nothing has happened in it for longer than AGE (default 3d): no commits,
 #     no index writes, and it wasn't created recently
 #   - it has no uncommitted or untracked changes
-#   - every commit is pushed, or its upstream is gone because the PR was
-#     merged (checked with gh, at the same commit as local HEAD)
+#   - its commits are saved elsewhere: in local main, origin's copy of the
+#     branch, or origin/main (main being the repo's default branch)
+#
+# Uses local refs only, with no fetch, so it's as current as your last fetch.
+# Squash-merged branches whose remote branch was deleted are kept, since
+# their original commits aren't in main.
 #
 # Never touches the main worktree, the worktree you're in, locked worktrees,
 # or detached HEADs. Finishes with `git worktree prune`.
@@ -58,37 +62,37 @@ last_activity() {
   echo "$newest"
 }
 
-# Prints why the branch isn't safe to delete, or nothing if it is.
-unpushed_reason() {
-  local path="$1" branch="$2" head="$3"
+# The repo's default branch: origin/HEAD, else main or master, else main.
+find_default_branch() {
+  local ref
+  if ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null); then
+    echo "${ref#origin/}"
+    return
+  fi
+  local name
+  for name in main master; do
+    if git show-ref --verify --quiet "refs/heads/$name"; then
+      echo "$name"
+      return
+    fi
+  done
+  echo main
+}
 
-  if git -C "$path" rev-parse --verify --quiet '@{u}' >/dev/null; then
-    local ahead
-    ahead=$(git -C "$path" rev-list --count '@{u}..HEAD')
-    ((ahead > 0)) && echo "$ahead unpushed commit(s)"
-    return
-  fi
-
-  if ! git -C "$path" config "branch.$branch.merge" >/dev/null; then
-    echo "no upstream"
-    return
-  fi
-
-  # Upstream is configured but gone, usually because the PR was merged and
-  # the remote branch deleted. Only trust a merged PR at this exact commit.
-  if ! command -v gh >/dev/null; then
-    echo "upstream gone, gh not installed to check for a merged PR"
-    return
-  fi
-  local merged_heads
-  if ! merged_heads=$(cd "$main_worktree" && gh pr list --head "$branch" --state merged \
-    --json headRefOid --jq '.[].headRefOid' 2>/dev/null); then
-    echo "upstream gone, gh couldn't check for a merged PR"
-    return
-  fi
-  if ! grep -qx "$head" <<<"$merged_heads"; then
-    echo "upstream gone, no merged PR at this commit"
-  fi
+# Prints why the branch's commits would be lost, or nothing if HEAD is in
+# local main, origin's copy of the branch, or origin/main.
+unsaved_reason() {
+  local path="$1" branch="$2"
+  local ref
+  for ref in \
+    "refs/heads/$default_branch" \
+    "refs/remotes/origin/$branch" \
+    "refs/remotes/origin/$default_branch"; do
+    if git -C "$path" merge-base --is-ancestor HEAD "$ref" 2>/dev/null; then
+      return
+    fi
+  done
+  echo "commits not in $default_branch, origin/$branch or origin/$default_branch"
 }
 
 report() {
@@ -100,7 +104,7 @@ report() {
 }
 
 clean_worktree() {
-  local path="$1" head="$2" branch="$3"
+  local path="$1" branch="$2"
 
   if [[ "$path" == "$current_worktree" ]]; then
     report kept "$path" "$branch" "you're in it"
@@ -121,7 +125,7 @@ clean_worktree() {
   fi
 
   local reason
-  reason=$(unpushed_reason "$path" "$branch" "$head")
+  reason=$(unsaved_reason "$path" "$branch")
   if [[ -n "$reason" ]]; then
     report kept "$path" "$branch" "$reason"
     return
@@ -174,16 +178,17 @@ main() {
 
   now=$(date +%s)
   current_worktree=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  main_worktree=""
+  default_branch=$(find_default_branch)
 
   # Records in `git worktree list --porcelain` are separated by blank lines.
-  # The first record is always the main worktree.
-  local path="" head="" branch="" skip=""
+  # Fields are joined with the unit separator, not a tab: read merges runs
+  # of whitespace separators, which would shift an empty branch field.
+  local sep=$'\x1f'
+  local path="" branch="" skip=""
   local -a records=()
   while IFS= read -r line || [[ -n "$path" ]]; do
     case "$line" in
       "worktree "*) path="${line#worktree }" ;;
-      "HEAD "*) head="${line#HEAD }" ;;
       "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
       detached) skip="detached HEAD" ;;
       bare) skip="bare" ;;
@@ -191,25 +196,22 @@ main() {
       prunable*) skip="prunable" ;;
       "")
         if [[ -n "$path" ]]; then
-          records+=("$path"$'\t'"$head"$'\t'"$branch"$'\t'"$skip")
+          records+=("$path$sep$branch$sep$skip")
         fi
-        path="" head="" branch="" skip=""
+        path="" branch="" skip=""
         ;;
     esac
   done < <(git worktree list --porcelain; echo)
 
+  # The first record is always the main worktree, which is never removed.
   local record
-  for record in "${records[@]}"; do
-    IFS=$'\t' read -r path head branch skip <<<"$record"
-    if [[ -z "$main_worktree" ]]; then
-      main_worktree="$path"
-      continue
-    fi
+  for record in "${records[@]:1}"; do
+    IFS="$sep" read -r path branch skip <<<"$record"
     if [[ -n "$skip" ]]; then
       [[ "$skip" != prunable ]] && report kept "$path" "${branch:-none}" "$skip"
       continue
     fi
-    clean_worktree "$path" "$head" "$branch"
+    clean_worktree "$path" "$branch"
   done
 
   [[ "$dry_run" == true ]] || git worktree prune

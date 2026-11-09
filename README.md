@@ -76,9 +76,11 @@ Run its tests with `python3 tests/block-agent-push-test.py`.
 
 `gwclean [AGE]` removes worktrees, and deletes their branches, once they've
 been idle longer than `AGE` (default `3d`; also `30m`, `1h`, `1w`), have no
-uncommitted changes, and are fully pushed. If the remote branch is gone, it
-checks with `gh` that the PR was merged at the same commit. `-n` shows what it
-would do; `-q` prints removals only.
+uncommitted changes, and their commits are in local `main`, `origin/<branch>`
+or `origin/main` (using the repo's default branch). It only reads local refs,
+so it's as current as your last fetch. Squash-merged branches whose remote
+branch was deleted are kept. `-n` shows what it would do; `-q` prints removals
+only.
 
 It runs on its own when a terminal opens in a repo (`shell/startup.sh`). To run
 it when a Claude Code session starts, add this to `~/.claude/settings.json`:

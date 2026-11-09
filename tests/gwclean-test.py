@@ -4,7 +4,6 @@
 #
 # Each test builds a real repo with a local bare "remote" in a temp folder.
 # Worktrees are aged by backdating commit dates and their git admin files.
-# A fake gh on PATH stands in for GitHub.
 
 import os
 import shutil
@@ -16,16 +15,13 @@ from pathlib import Path
 
 GWCLEAN = Path(__file__).resolve().parent.parent / "bin" / "gwclean"
 DAY = 86400
-# Commands gwclean needs, for tests that run with gh missing from PATH.
-TOOLS = ["bash", "git", "date", "stat", "readlink", "dirname", "sed", "grep", "env", "cat"]
 
 
 class Repo:
-    def __init__(self, root):
+    def __init__(self, root, default_branch="main"):
         self.root = Path(root)
         self.main = self.root / "main"
-        self.bin = self.root / "fakebin"
-        self.bin.mkdir()
+        self.default = default_branch
         self.env = {
             **os.environ,
             "HOME": str(self.root),
@@ -35,12 +31,13 @@ class Repo:
             "GIT_AUTHOR_EMAIL": "test@example.com",
             "GIT_COMMITTER_NAME": "Test",
             "GIT_COMMITTER_EMAIL": "test@example.com",
-            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
         }
-        self.git("init", "--bare", "-b", "main", str(self.root / "remote.git"), cwd=self.root)
-        self.git("clone", str(self.root / "remote.git"), str(self.main), cwd=self.root)
+        remote = str(self.root / "remote.git")
+        self.git("init", "--bare", "-b", default_branch, remote, cwd=self.root)
+        self.git("clone", remote, str(self.main), cwd=self.root)
+        self.git("checkout", "-b", default_branch)
         self.commit(self.main, "initial", days_ago=30)
-        self.git("push", "-u", "origin", "main")
+        self.git("push", "-u", "origin", default_branch)
 
     def git(self, *args, cwd=None, env=None):
         return subprocess.run(
@@ -59,11 +56,10 @@ class Repo:
         env = {**self.env, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
         self.git("commit", "-m", name, cwd=cwd, env=env)
 
-    def worktree(self, name, days_ago=5, push=True, commit=True):
+    def worktree(self, name, days_ago=5, push=True):
         path = self.root / "worktrees" / name
         self.git("worktree", "add", "-b", name, str(path))
-        if commit:
-            self.commit(path, name, days_ago)
+        self.commit(path, name, days_ago)
         if push:
             self.git("push", "-u", "origin", name, cwd=path)
         return path
@@ -76,32 +72,11 @@ class Repo:
             if (admin / name).exists():
                 os.utime(admin / name, (stamp, stamp))
 
-    def head(self, path):
-        return self.git("rev-parse", "HEAD", cwd=path)
-
-    def fake_gh(self, merged_heads=(), fail=False):
-        script = self.bin / "gh"
-        if fail:
-            script.write_text("#!/usr/bin/env bash\nexit 1\n")
-        else:
-            lines = "".join(f"echo {h}\n" for h in merged_heads)
-            script.write_text(f"#!/usr/bin/env bash\n{lines}")
-        script.chmod(0o755)
-
-    def path_without_gh(self):
-        tools = self.root / "tools"
-        tools.mkdir(exist_ok=True)
-        for tool in TOOLS:
-            found = shutil.which(tool)
-            if found and not (tools / tool).exists():
-                (tools / tool).symlink_to(found)
-        return {**self.env, "PATH": str(tools)}
-
-    def run(self, *args, cwd=None, env=None):
+    def run(self, *args, cwd=None):
         return subprocess.run(
             [str(GWCLEAN), *args],
             cwd=cwd or self.main,
-            env=env or self.env,
+            env=self.env,
             capture_output=True,
             text=True,
         )
@@ -129,7 +104,7 @@ def kept(repo, path, name):
 # Each returns None on success or a failure message.
 
 
-def test_removes_old_clean_pushed(repo):
+def test_removes_when_in_origin_branch(repo):
     path = repo.worktree("done")
     repo.age(path, 5)
     result = repo.run()
@@ -137,6 +112,39 @@ def test_removes_old_clean_pushed(repo):
         return f"expected removal; output: {result.stdout}{result.stderr}"
     if "removed" not in result.stdout:
         return f"expected 'removed' line; got {result.stdout!r}"
+
+
+def test_removes_when_in_local_main(repo):
+    path = repo.worktree("merged-locally", push=False)
+    repo.git("merge", "--no-ff", "-m", "merge", "merged-locally")
+    repo.age(path, 5)
+    result = repo.run()
+    if not removed(repo, path, "merged-locally"):
+        return f"expected removal; output: {result.stdout}{result.stderr}"
+
+
+def test_removes_when_in_origin_main_after_remote_branch_deleted(repo):
+    path = repo.worktree("merged-remotely")
+    repo.git("push", "origin", f"merged-remotely:{repo.default}", cwd=path)
+    repo.delete_remote_branch("merged-remotely")
+    repo.age(path, 5)
+    result = repo.run()
+    if not removed(repo, path, "merged-remotely"):
+        return f"expected removal; output: {result.stdout}{result.stderr}"
+
+
+def test_keeps_squash_merged_with_remote_branch_deleted(repo):
+    path = repo.worktree("squashed")
+    repo.git("merge", "--squash", "squashed")
+    repo.git("commit", "-m", "squash")
+    repo.git("push")
+    repo.delete_remote_branch("squashed")
+    repo.age(path, 5)
+    result = repo.run()
+    if not kept(repo, path, "squashed"):
+        return "squash-merged worktree was removed"
+    if "commits not in main, origin/squashed or origin/main" not in result.stdout:
+        return f"expected reason; got {result.stdout!r}"
 
 
 def test_keeps_recent(repo):
@@ -177,73 +185,46 @@ def test_keeps_modified_tracked_file(repo):
         return "worktree with modified file was removed"
 
 
-def test_keeps_unpushed_commits(repo):
+def test_keeps_commits_after_push(repo):
     path = repo.worktree("ahead")
     repo.commit(path, "extra", days_ago=5)
     repo.age(path, 5)
     result = repo.run()
     if not kept(repo, path, "ahead"):
         return "worktree with unpushed commit was removed"
-    if "1 unpushed commit" not in result.stdout:
+    if "commits not in" not in result.stdout:
         return f"expected reason; got {result.stdout!r}"
 
 
-def test_keeps_no_upstream(repo):
+def test_keeps_never_pushed(repo):
     path = repo.worktree("local-only", push=False)
     repo.age(path, 5)
-    result = repo.run()
+    repo.run()
     if not kept(repo, path, "local-only"):
         return "never-pushed worktree was removed"
-    if "no upstream" not in result.stdout:
-        return f"expected reason; got {result.stdout!r}"
 
 
-def test_gone_upstream_merged_at_head_is_removed(repo):
-    path = repo.worktree("merged")
-    head = repo.head(path)
-    repo.delete_remote_branch("merged")
-    repo.fake_gh(merged_heads=[head])
-    repo.age(path, 5)
-    result = repo.run()
-    if not removed(repo, path, "merged"):
-        return f"merged worktree was kept; output: {result.stdout}"
+def test_default_branch_from_origin_head():
+    with tempfile.TemporaryDirectory() as root:
+        repo = Repo(root, default_branch="trunk")
+        repo.git("remote", "set-head", "origin", "trunk")
+        path = repo.worktree("into-trunk", push=False)
+        repo.git("merge", "--no-ff", "-m", "merge", "into-trunk")
+        repo.age(path, 5)
+        result = repo.run()
+        if not removed(repo, path, "into-trunk"):
+            return f"didn't use origin/HEAD as default branch; output: {result.stdout}"
 
 
-def test_gone_upstream_merged_at_other_commit_is_kept(repo):
-    path = repo.worktree("merged-then-more")
-    old_head = repo.head(path)
-    repo.delete_remote_branch("merged-then-more")
-    repo.commit(path, "after-merge", days_ago=5)
-    repo.fake_gh(merged_heads=[old_head])
-    repo.age(path, 5)
-    result = repo.run()
-    if not kept(repo, path, "merged-then-more"):
-        return "worktree with commits after the merged PR was removed"
-    if "no merged PR at this commit" not in result.stdout:
-        return f"expected reason; got {result.stdout!r}"
-
-
-def test_gone_upstream_gh_fails_is_kept(repo):
-    path = repo.worktree("gh-down")
-    repo.delete_remote_branch("gh-down")
-    repo.fake_gh(fail=True)
-    repo.age(path, 5)
-    result = repo.run()
-    if not kept(repo, path, "gh-down"):
-        return "worktree was removed when gh failed"
-    if "gh couldn't check" not in result.stdout:
-        return f"expected reason; got {result.stdout!r}"
-
-
-def test_gone_upstream_without_gh_is_kept(repo):
-    path = repo.worktree("no-gh")
-    repo.delete_remote_branch("no-gh")
-    repo.age(path, 5)
-    result = repo.run(env=repo.path_without_gh())
-    if not kept(repo, path, "no-gh"):
-        return f"worktree was removed without gh; stderr: {result.stderr}"
-    if "gh not installed" not in result.stdout:
-        return f"expected reason; got {result.stdout!r} {result.stderr!r}"
+def test_default_branch_falls_back_to_master():
+    with tempfile.TemporaryDirectory() as root:
+        repo = Repo(root, default_branch="master")
+        path = repo.worktree("into-master", push=False)
+        repo.git("merge", "--no-ff", "-m", "merge", "into-master")
+        repo.age(path, 5)
+        result = repo.run()
+        if not removed(repo, path, "into-master"):
+            return f"didn't fall back to master; output: {result.stdout}"
 
 
 def test_dry_run_changes_nothing(repo):
@@ -287,12 +268,15 @@ def test_keeps_locked(repo):
 
 
 def test_keeps_detached(repo):
+    # HEAD is in main, so only the detached check keeps it.
     path = repo.root / "worktrees" / "detached"
     repo.git("worktree", "add", "--detach", str(path))
     repo.age(path, 5)
-    repo.run()
+    result = repo.run()
     if not path.exists():
         return "detached worktree was removed"
+    if "(none): detached HEAD" not in result.stdout:
+        return f"expected detached reason; got {result.stdout!r} {result.stderr!r}"
 
 
 def test_quiet_prints_only_removals(repo):
@@ -343,11 +327,14 @@ def main():
     tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_")]
     failures = 0
     for name, test in tests:
-        with tempfile.TemporaryDirectory() as root:
-            try:
-                error = test(Repo(root))
-            except subprocess.CalledProcessError as e:
-                error = f"setup failed: {e.cmd}: {e.stderr}"
+        try:
+            if test.__code__.co_argcount:
+                with tempfile.TemporaryDirectory() as root:
+                    error = test(Repo(root))
+            else:
+                error = test()
+        except subprocess.CalledProcessError as e:
+            error = f"setup failed: {e.cmd}: {e.stderr}"
         if error:
             failures += 1
             print(f"FAIL {name}: {error}")
