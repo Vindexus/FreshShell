@@ -18,6 +18,7 @@ alias gff="git ff"
 alias glb="git lb"
 alias glbd="git lbd"
 alias glg="git lg"
+alias gbd="git brand -D"
 
 # Git's completion loads on first use, and __git_complete needs it loaded.
 if declare -F _completion_loader >/dev/null; then
@@ -31,4 +32,5 @@ if declare -F __git_complete >/dev/null; then
   __git_complete gd _git_diff
   __git_complete gff _git_merge
   __git_complete glg _git_log
+  __git_complete gbd _git_branch
 fi
